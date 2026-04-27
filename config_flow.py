@@ -32,7 +32,7 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     """Validate credentials by attempting a login."""
     session = async_create_clientsession(hass)
     try:
-        client = SVPBVApiClient(data["username"], data["password"], session)
+        client = SVPBVApiClient(data["username"], data["password"], session, device_uuid="HA-SVPBV-SETUP-0000-000000000000")
         await client.async_login()
         all_data = await client.async_get_all_data()
         return {"title": all_data.get("customer_name") or data["username"]}

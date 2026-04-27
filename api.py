@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import time
 from datetime import date
 from typing import Any
 from urllib.parse import unquote
@@ -15,9 +16,9 @@ _LOGGER = logging.getLogger(__name__)
 BASE_URL = "https://mijn.svpbv.nl"
 CUSTOMER_APP = f"{BASE_URL}/CustomerApp"
 
-# OutSystems version tokens (from HAR capture, April 2026)
-MODULE_VERSION = "XhgmxfTU2Uh_GYP0R54pCA"
-API_VERSIONS = {
+# Known API version tokens (from HAR capture, April 2026).
+# The server still returns data when stale; it just flags hasApiVersionChanged=true.
+_KNOWN_API_VERSIONS = {
     "login":          "OW6SzyxPDcdFr8DWQcIgNA",
     "month_usage":    "H1Ow1vF8XRXDNL0Vs1eI_A",
     "screen_data":    "s85eTypaQlTSUL033FuyOQ",
@@ -26,9 +27,7 @@ API_VERSIONS = {
     "day_chart_data": "c4Xnnb2eEFmkw7enMYqLGQ",
 }
 
-DEVICE_UUID = "EEFB29E7-281D-4EDF-B4D6-259BB5108F4B"
-
-BASE_HEADERS = {
+_BASE_HEADERS = {
     "Accept": "application/json",
     "Accept-Language": "nl-NL,nl;q=0.9",
     "Content-Type": "application/json; charset=UTF-8",
@@ -37,7 +36,6 @@ BASE_HEADERS = {
         "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/22H123"
     ),
     "outsystems-locale": "en-US",
-    "outsystems-device-uuid": DEVICE_UUID,
 }
 
 
@@ -67,37 +65,59 @@ class SVPBVApiError(Exception):
 class SVPBVApiClient:
     """Async client for the SVP BV customer portal API."""
 
-    def __init__(self, username: str, password: str, session: aiohttp.ClientSession) -> None:
+    def __init__(self, username: str, password: str, session: aiohttp.ClientSession, device_uuid: str) -> None:
         self._username = username
         self._password = password
         self._session = session
+        self._device_uuid = device_uuid
+        self._module_version: str = ""
+        self._api_versions: dict[str, str] = {}
         self._authenticated = False
+
+    def _api_version(self, key: str) -> str:
+        return self._api_versions.get(key, self._module_version)
 
     def _csrf(self) -> str:
         return _extract_csrf(self._session.cookie_jar) or ""
 
     def _headers(self) -> dict[str, str]:
         return {
-            **BASE_HEADERS,
+            **_BASE_HEADERS,
+            "outsystems-device-uuid": self._device_uuid,
             "outsystems-request-token": _request_token(),
             "x-csrftoken": self._csrf(),
         }
+
+    async def _fetch_module_version(self) -> str:
+        ts = int(time.time() * 1000)
+        async with self._session.get(
+            f"{CUSTOMER_APP}/moduleservices/moduleversioninfo",
+            params={str(ts): ""},
+            headers={**_BASE_HEADERS, "outsystems-device-uuid": self._device_uuid},
+        ) as resp:
+            resp.raise_for_status()
+            data = await resp.json(content_type=None)
+            return data.get("versionToken", "")
 
     async def async_login(self) -> None:
         """Authenticate with the SVP BV portal."""
         _LOGGER.debug("SVP BV: fetching session cookie")
         async with self._session.get(
             f"{CUSTOMER_APP}/",
-            headers={**BASE_HEADERS, "Accept": "text/html,*/*"},
+            headers={**_BASE_HEADERS, "outsystems-device-uuid": self._device_uuid, "Accept": "text/html,*/*"},
             allow_redirects=True,
         ) as resp:
             _LOGGER.debug("SVP BV: session GET status %s", resp.status)
+
+        self._module_version = await self._fetch_module_version()
+        self._api_versions = dict(_KNOWN_API_VERSIONS)
+        _LOGGER.debug("SVP BV: module version %s", self._module_version)
 
         csrf = self._csrf()
         _LOGGER.debug("SVP BV: CSRF after session init: %s", csrf or "(empty)")
 
         payload = {
-            "versionInfo": {"moduleVersion": MODULE_VERSION, "apiVersion": API_VERSIONS["login"]},
+            "versionInfo": {"moduleVersion": self._module_version, "apiVersion": self._api_version("login")},
             "viewName": "Common.Login",
             "inputParameters": {
                 "Username": self._username,
@@ -128,7 +148,7 @@ class SVPBVApiClient:
         await self._ensure_authenticated()
 
         payload: dict = {
-            "versionInfo": {"moduleVersion": MODULE_VERSION, "apiVersion": API_VERSIONS[api_key]},
+            "versionInfo": {"moduleVersion": self._module_version, "apiVersion": self._api_version(api_key)},
             "viewName": view_name,
         }
         if screen_vars is not None:
@@ -248,9 +268,8 @@ class SVPBVApiClient:
             value = _to_float(p.get("Value"))
             if label and value is not None:
                 hourly[label] = value
-        today_total = sum(hourly.values())
         return {
-            "today_total_gj": today_total,
+            "today_total_gj": sum(hourly.values()),
             "today_hourly": hourly,
         }
 

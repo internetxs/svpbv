@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import timedelta
 
 import aiohttp
@@ -55,10 +56,12 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up SVP BV from a config entry."""
     session = async_create_clientsession(hass)
+    device_uuid = str(uuid.UUID(hex=entry.entry_id)).upper()
     client = SVPBVApiClient(
         username=entry.data["username"],
         password=entry.data["password"],
         session=session,
+        device_uuid=device_uuid,
     )
 
     scan_interval = entry.data.get("scan_interval", DEFAULT_SCAN_INTERVAL)

@@ -10,7 +10,9 @@ import json
 import os
 import random
 import sys
+import uuid
 from datetime import date
+from pathlib import Path
 from urllib.parse import unquote
 
 import httpx
@@ -18,9 +20,9 @@ import httpx
 BASE_URL = "https://mijn.svpbv.nl"
 CUSTOMER_APP = f"{BASE_URL}/CustomerApp"
 
-# OutSystems version tokens (from HAR capture, April 2026)
-MODULE_VERSION = "XhgmxfTU2Uh_GYP0R54pCA"
-API_VERSIONS = {
+# Per-endpoint API version hashes (from HAR, April 2026).
+# The server still returns data when stale; it just flags hasApiVersionChanged=true.
+_KNOWN_API_VERSIONS = {
     "login":            "OW6SzyxPDcdFr8DWQcIgNA",
     "month_usage":      "H1Ow1vF8XRXDNL0Vs1eI_A",
     "screen_data":      "s85eTypaQlTSUL033FuyOQ",
@@ -29,7 +31,26 @@ API_VERSIONS = {
     "day_chart_data":   "c4Xnnb2eEFmkw7enMYqLGQ",
 }
 
-DEVICE_UUID = "EEFB29E7-281D-4EDF-B4D6-259BB5108F4B"
+_UUID_FILE = Path.home() / ".svpbv_device_uuid"
+
+
+def _load_device_uuid() -> str:
+    if _UUID_FILE.exists():
+        return _UUID_FILE.read_text().strip()
+    new_uuid = str(uuid.uuid4()).upper()
+    _UUID_FILE.write_text(new_uuid)
+    return new_uuid
+
+
+async def _fetch_module_version(client: httpx.AsyncClient) -> str:
+    resp = await client.get(
+        f"{CUSTOMER_APP}/moduleservices/moduleversioninfo",
+        params={str(int(asyncio.get_event_loop().time() * 1000)): ""},
+    )
+    return resp.json().get("versionToken", "")
+
+
+DEVICE_UUID = _load_device_uuid()
 
 BASE_HEADERS = {
     "Accept": "application/json",
@@ -58,14 +79,13 @@ def _extract_csrf(cookies: httpx.Cookies) -> str | None:
     return parts.get("crf")
 
 
-def _version_info(api_key: str) -> dict:
-    return {"moduleVersion": MODULE_VERSION, "apiVersion": API_VERSIONS[api_key]}
-
 
 class SVPPortal:
     def __init__(self, username: str, password: str):
         self.username = username
         self.password = password
+        self._module_version: str = ""
+        self._api_versions: dict = {}
 
     async def fetch_all(self, day: str | None = None) -> dict:
         async with httpx.AsyncClient(
@@ -78,9 +98,16 @@ class SVPPortal:
                 return await self._fetch_day(client, day)
             return await self._fetch_data(client)
 
+    def _api_version(self, key: str) -> str:
+        return self._api_versions.get(key, self._module_version)
+
     async def _login(self, client: httpx.AsyncClient) -> None:
         print("Fetching session...")
         await client.get(f"{CUSTOMER_APP}/")
+
+        self._module_version = await _fetch_module_version(client)
+        self._api_versions = {k: v for k, v in _KNOWN_API_VERSIONS.items()}
+        print(f"Module version: {self._module_version}")
 
         csrf = _extract_csrf(client.cookies)
         if not csrf:
@@ -91,7 +118,7 @@ class SVPPortal:
         resp = await client.post(
             f"{CUSTOMER_APP}/screenservices/CustomerApp/Common/Login/ActionDoLogin",
             json={
-                "versionInfo": _version_info("login"),
+                "versionInfo": {"moduleVersion": self._module_version, "apiVersion": self._api_version("login")},
                 "viewName": "Common.Login",
                 "inputParameters": {
                     "Username": self.username,
@@ -114,7 +141,7 @@ class SVPPortal:
     async def _post(self, client: httpx.AsyncClient, path: str, api_key: str, screen_data: dict | None = None, view: str = "MainFlow.Home") -> dict:
         csrf = _extract_csrf(client.cookies) or ""
         payload: dict = {
-            "versionInfo": _version_info(api_key),
+            "versionInfo": {"moduleVersion": self._module_version, "apiVersion": self._api_version(api_key)},
             "viewName": view,
         }
         if screen_data is not None:
