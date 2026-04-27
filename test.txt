@@ -1,0 +1,301 @@
+#!/usr/bin/env python3
+"""
+SVP Portal Heating Data Fetcher
+Logs in to https://mijn.svpbv.nl and retrieves heating/consumption details.
+"""
+
+import asyncio
+import argparse
+import json
+import os
+import random
+import sys
+from datetime import date
+from urllib.parse import unquote
+
+import httpx
+
+BASE_URL = "https://mijn.svpbv.nl"
+CUSTOMER_APP = f"{BASE_URL}/CustomerApp"
+
+# OutSystems version tokens (from HAR capture, April 2026)
+MODULE_VERSION = "XhgmxfTU2Uh_GYP0R54pCA"
+API_VERSIONS = {
+    "login":            "OW6SzyxPDcdFr8DWQcIgNA",
+    "month_usage":      "H1Ow1vF8XRXDNL0Vs1eI_A",
+    "screen_data":      "s85eTypaQlTSUL033FuyOQ",
+    "connection":       "D8fVmPEMS3ny4t+5atpDlA",
+    "chart_data":       "12EJ0CgyhUv5b+qIKiFw1g",
+    "day_chart_data":   "c4Xnnb2eEFmkw7enMYqLGQ",
+}
+
+DEVICE_UUID = "EEFB29E7-281D-4EDF-B4D6-259BB5108F4B"
+
+BASE_HEADERS = {
+    "Accept": "application/json",
+    "Accept-Language": "nl-NL,nl;q=0.9",
+    "Content-Type": "application/json; charset=UTF-8",
+    "User-Agent": (
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) "
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/22H123"
+    ),
+    "outsystems-locale": "en-US",
+    "outsystems-device-uuid": DEVICE_UUID,
+}
+
+
+def _request_token() -> str:
+    return str(random.randint(10**15, 10**16 - 1))
+
+
+def _extract_csrf(cookies: httpx.Cookies) -> str | None:
+    nr2 = cookies.get("nr2Users", "")
+    if not nr2:
+        return None
+    parts = dict(
+        p.split("=", 1) for p in unquote(nr2).split(";") if "=" in p
+    )
+    return parts.get("crf")
+
+
+def _version_info(api_key: str) -> dict:
+    return {"moduleVersion": MODULE_VERSION, "apiVersion": API_VERSIONS[api_key]}
+
+
+class SVPPortal:
+    def __init__(self, username: str, password: str):
+        self.username = username
+        self.password = password
+
+    async def fetch_all(self, day: str | None = None) -> dict:
+        async with httpx.AsyncClient(
+            base_url=BASE_URL,
+            follow_redirects=True,
+            timeout=30,
+        ) as client:
+            await self._login(client)
+            if day:
+                return await self._fetch_day(client, day)
+            return await self._fetch_data(client)
+
+    async def _login(self, client: httpx.AsyncClient) -> None:
+        print("Fetching session...")
+        await client.get(f"{CUSTOMER_APP}/")
+
+        csrf = _extract_csrf(client.cookies)
+        if not csrf:
+            print("Warning: no CSRF token from initial request", file=sys.stderr)
+            csrf = ""
+
+        print("Logging in...")
+        resp = await client.post(
+            f"{CUSTOMER_APP}/screenservices/CustomerApp/Common/Login/ActionDoLogin",
+            json={
+                "versionInfo": _version_info("login"),
+                "viewName": "Common.Login",
+                "inputParameters": {
+                    "Username": self.username,
+                    "Password": self.password,
+                },
+            },
+            headers={
+                **BASE_HEADERS,
+                "outsystems-request-token": _request_token(),
+                "x-csrftoken": csrf,
+            },
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        if body.get("exception"):
+            print(f"\nLogin failed: {body['exception'].get('message', 'unknown error')}", file=sys.stderr)
+            sys.exit(1)
+        print("Login successful.")
+
+    async def _post(self, client: httpx.AsyncClient, path: str, api_key: str, screen_data: dict | None = None, view: str = "MainFlow.Home") -> dict:
+        csrf = _extract_csrf(client.cookies) or ""
+        payload: dict = {
+            "versionInfo": _version_info(api_key),
+            "viewName": view,
+        }
+        if screen_data is not None:
+            payload["screenData"] = {"variables": screen_data}
+        resp = await client.post(
+            f"{CUSTOMER_APP}{path}",
+            json=payload,
+            headers={
+                **BASE_HEADERS,
+                "outsystems-request-token": _request_token(),
+                "x-csrftoken": csrf,
+            },
+        )
+        resp.raise_for_status()
+        return resp.json().get("data", {})
+
+    async def _fetch_day(self, client: httpx.AsyncClient, day: str) -> dict:
+        data = await self._post(
+            client,
+            "/screenservices/Consumption_CW/WebBlocks/DayOverview/DataActionGetChartData",
+            "day_chart_data",
+            {
+                "Date": day,
+                "IsInitialized": False,
+                "TotalConsumption": "0",
+                "IsMobile": True,
+                "_isMobileInDataFetchStatus": 1,
+                "IsScroll": True,
+                "_isScrollInDataFetchStatus": 1,
+                "ChangeBoolean": False,
+                "_changeBooleanInDataFetchStatus": 1,
+            },
+            view="MainFlow.Consumption",
+        )
+        return {"day": day, "day_chart_data": data}
+
+    async def _fetch_data(self, client: httpx.AsyncClient) -> dict:
+        print("Fetching data...")
+        results = await asyncio.gather(
+            self._post(
+                client,
+                "/screenservices/CustomerApp/MainFlow/Home/DataActionMonthConsumptionAndSmartMeter",
+                "month_usage",
+                {"ShowMessageBox": False},
+            ),
+            self._post(
+                client,
+                "/screenservices/CustomerApp/MainFlow/Home/DataActionScreenData",
+                "screen_data",
+                {"ShowMessageBox": False},
+            ),
+            self._post(
+                client,
+                "/screenservices/CustomerApp/Common/CurrentAddress/DataActionGetConnection",
+                "connection",
+                {"ChangeBoolean": False, "_changeBooleanInDataFetchStatus": 1},
+            ),
+            self._post(
+                client,
+                "/screenservices/Consumption_CW/WebBlocks/YearOverview/DataActionGetChartData",
+                "chart_data",
+                {
+                    "Date": str(date.today()),
+                    "YearComparison": False,
+                    "IsInitialized": False,
+                    "TotalConsumption": "0",
+                    "IsMobile": True,
+                    "_isMobileInDataFetchStatus": 1,
+                    "ChangeBoolean": False,
+                    "_changeBooleanInDataFetchStatus": 1,
+                },
+            ),
+        )
+        month_usage, screen_data, connection, chart_data = results
+        return {
+            "month_usage": month_usage,
+            "screen_data": screen_data,
+            "connection": connection,
+            "chart_data": chart_data,
+        }
+
+
+def _fmt(value, unit=""):
+    if value is None:
+        return "N/A"
+    return f"{value} {unit}".strip()
+
+
+def display_day(data: dict) -> None:
+    print("\n" + "=" * 60)
+    print(f"  SVP Portal — Daily Usage: {data['day']}")
+    print("=" * 60)
+    points = data.get("day_chart_data", {}).get("ChartData", {}).get("List", [])
+    if not points:
+        print("  No data available.")
+    else:
+        total = sum(float(p.get("Value", 0)) for p in points)
+        print(f"\n  {'Hour':<8} {'GJ':>8}")
+        print(f"  {'-'*8} {'-'*8}")
+        for p in points:
+            print(f"  {p.get('Label', ''):<8} {float(p.get('Value', 0)):>8.3f}")
+        print(f"  {'Total':<8} {total:>8.3f}")
+    print("\n" + "=" * 60)
+
+
+def display_results(data: dict) -> None:
+    print("\n" + "=" * 60)
+    print("  SVP Portal — Heating / Consumption Details")
+    print("=" * 60)
+
+    mu = data.get("month_usage", {})
+    if mu:
+        print("\n[This Month]")
+        print(f"  Usage            : {_fmt(mu.get('MonthUsage'), 'GJ')}")
+        print(f"  Smart meter      : {mu.get('HasSmartMeterActive', 'N/A')}")
+
+    sd = data.get("screen_data", {})
+    if sd:
+        print("\n[Account]")
+        print(f"  Name             : {_fmt(sd.get('CustomerName'))}")
+        print(f"  Advance amount   : € {_fmt(sd.get('CurrentAdvanceAmount'))}")
+
+    conn = data.get("connection", {})
+    if conn:
+        print("\n[Connection]")
+        print(f"  Address          : {_fmt(conn.get('CurrentAddress2'))}")
+        print(f"  Active           : {conn.get('IsActive', 'N/A')}")
+
+    chart = data.get("chart_data", {})
+    if chart:
+        chart_points = chart.get("ChartData", {}).get("List", [])
+        if chart_points:
+            print("\n[Year Overview]")
+            print(f"  {'Month':<8} {'GJ':>8}")
+            print(f"  {'-'*8} {'-'*8}")
+            for point in chart_points:
+                label = point.get("Label", "")
+                value = point.get("Value", "")
+                print(f"  {str(label):<8} {str(value):>8}")
+
+    print("\n" + "=" * 60)
+
+
+async def main_async(args) -> None:
+    username = args.username or os.environ.get("SVP_USERNAME")
+    password = args.password or os.environ.get("SVP_PASSWORD")
+
+    if not username or not password:
+        print(
+            "Credentials required. Pass --username / --password or set "
+            "SVP_USERNAME / SVP_PASSWORD environment variables.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    portal = SVPPortal(username, password)
+    data = await portal.fetch_all(day=args.date)
+
+    if args.json:
+        print(json.dumps(data, indent=2, default=str))
+    elif args.date:
+        display_day(data)
+    else:
+        display_results(data)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Fetch heating details from mijn.svpbv.nl"
+    )
+    parser.add_argument("-u", "--username", help="Portal username / email")
+    parser.add_argument("-p", "--password", help="Portal password")
+    parser.add_argument(
+        "--json", action="store_true", help="Output raw JSON instead of formatted text"
+    )
+    parser.add_argument(
+        "--date", metavar="YYYY-MM-DD", help="Fetch hourly usage for a specific date"
+    )
+    args = parser.parse_args()
+    asyncio.run(main_async(args))
+
+
+if __name__ == "__main__":
+    main()

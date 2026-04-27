@@ -1,0 +1,23 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "SVP BV Stadsverwarming",
+        "description": "Voer uw inloggegevens in voor {portal_url}",
+        "data": {
+          "username": "E-mailadres",
+          "password": "Wachtwoord",
+          "scan_interval": "Bijwerkinterval (minuten)"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Ongeldig e-mailadres of wachtwoord.",
+      "cannot_connect": "Kan geen verbinding maken met mijn.svpbv.nl. Controleer uw netwerk.",
+      "unknown": "Er is een onverwachte fout opgetreden. Bekijk de HA-logs."
+    },
+    "abort": {
+      "already_configured": "Dit account is al geconfigureerd."
+    }
+  }
+}

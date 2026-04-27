@@ -1,0 +1,23 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "SVP BV District Heating",
+        "description": "Enter your credentials for {portal_url}",
+        "data": {
+          "username": "Email address",
+          "password": "Password",
+          "scan_interval": "Update interval (minutes)"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid email address or password.",
+      "cannot_connect": "Could not connect to mijn.svpbv.nl. Check your network.",
+      "unknown": "An unexpected error occurred. Check the HA logs."
+    },
+    "abort": {
+      "already_configured": "This account is already configured."
+    }
+  }
+}
