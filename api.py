@@ -255,8 +255,9 @@ class SVPBVApiClient:
         }
 
     async def async_get_all_data(self) -> dict[str, Any]:
-        """Fetch all data concurrently."""
-        await self._ensure_authenticated()
+        """Fetch all data, re-logging in each time to ensure a fresh session."""
+        self._authenticated = False
+        await self.async_login()
         month_usage, screen_data, connection, chart_data, day_data = await asyncio.gather(
             self._fetch_month_usage(),
             self._fetch_screen_data(),

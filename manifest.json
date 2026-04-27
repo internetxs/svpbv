@@ -1,7 +1,7 @@
 {
   "domain": "svpbv",
   "name": "SVP BV District Heating",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "documentation": "https://github.com/internetxs/svpbv",
   "issue_tracker": "https://github.com/internetxs/svpbv/issues",
   "dependencies": [],
