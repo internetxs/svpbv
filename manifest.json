@@ -2,10 +2,10 @@
   "domain": "svpbv",
   "name": "SVP BV District Heating",
   "version": "1.0.0",
-  "documentation": "https://github.com/martinenrosemary/ha-svpbv",
-  "issue_tracker": "https://github.com/martinenrosemary/ha-svpbv/issues",
+  "documentation": "https://github.com/internetxs/svpbv",
+  "issue_tracker": "https://github.com/internetxs/svpbv/issues",
   "dependencies": [],
-  "codeowners": ["@martinenrosemary"],
+  "codeowners": ["@internetxs"],
   "requirements": [],
   "iot_class": "cloud_polling",
   "config_flow": true
